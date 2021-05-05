@@ -1,6 +1,7 @@
 extern crate redis;
 mod style;
 
+use generational_arena::{Arena, Index};
 use iced::{
     button, scrollable, text_input, Align, Button, Column, Container, Element, Length, Row,
     Sandbox, Scrollable, Settings, Text, TextInput,
@@ -13,11 +14,16 @@ fn main() -> iced::Result {
 }
 
 struct RedisViewer {
-    redis: redis::Connection,
-    keys: Vec<String>,
-    namespaces: HashMap<String, RedisNamespace>,
-    keys_scrollbar_state: KeysScrollbarState,
-    key_buttons: Vec<(String, button::State)>,
+    server_tabs: Arena<ServerTab>,
+    current_server_tab_index: Option<Index>,
+    conn_form_state: ConnectionFormState,
+}
+
+struct KeysScrollbarState {
+    state: scrollable::State,
+}
+
+struct ValueEditState {
     selected_key: String,
     show_value_view: bool,
     selected_value: String,
@@ -25,11 +31,23 @@ struct RedisViewer {
     save_button_state: button::State,
 }
 
-struct KeysScrollbarState {
-    state: scrollable::State,
-    //scrollbar_width: Option<u16>,
-    //scrollbar_margin: Option<u16>,
-    //scroller_width: Option<u16>,
+struct ServerTab {
+    name: String,
+    redis: redis::Connection,
+    keys: Vec<String>,
+    namespaces: HashMap<String, RedisNamespace>,
+    keys_scrollbar_state: KeysScrollbarState,
+    key_buttons: Vec<(String, button::State)>,
+    value_edit_state: ValueEditState,
+}
+
+struct ConnectionFormState {
+    show_connection_form: bool,
+    conn_name_text_input_state: text_input::State,
+    conn_name_value: String,
+    conn_text_input_state: text_input::State,
+    conn_value: String,
+    connect_button: button::State,
 }
 
 #[derive(Debug, Clone)]
@@ -37,46 +55,40 @@ pub enum Message {
     KeySelected(usize),
     SelectedValueChanged(String),
     SelectedValueSaved,
+    ConnNameChanged(String),
+    ConnValueChanged(String),
+    ConnectRedis,
 }
 
 impl Sandbox for RedisViewer {
     type Message = Message;
 
     fn new() -> Self {
-        let mut redis =
-            connect_redis("redis://127.0.0.1/").expect("failed to get redis connection");
-        let keys = get_all_keys(&mut redis).expect("failed to get keys");
-        let namespaces = convert_keys_to_namespaces(&keys);
-        let keys_scrollbar_state = KeysScrollbarState {
-            state: scrollable::State::new(),
-            //scrollbar_width: Some(4),
-            //scrollbar_margin: None,
-            //scroller_width: Some(10),
+        let server_tabs = Arena::<ServerTab>::new();
+
+        let current_server_tab_index = None;
+
+        let show_connection_form = true;
+
+        let conn_name_text_input_state = text_input::State::default();
+        let conn_name_value = String::new();
+        let conn_text_input_state = text_input::State::default();
+        let conn_value = String::new();
+        let connect_button = button::State::default();
+
+        let conn_form_state = ConnectionFormState {
+            show_connection_form,
+            conn_name_text_input_state,
+            conn_name_value,
+            conn_text_input_state,
+            conn_value,
+            connect_button,
         };
 
-        let mut key_buttons = Vec::<(String, button::State)>::new();
-        for key in keys.iter() {
-            key_buttons.push((key.clone(), button::State::default()));
-        }
-
-        let selected_key = String::new();
-        let show_value_view = false;
-        let selected_value = String::new();
-        let selected_value_text_input_state = text_input::State::default();
-
-        let save_button_state = button::State::default();
-
         RedisViewer {
-            redis,
-            keys,
-            namespaces,
-            keys_scrollbar_state,
-            key_buttons,
-            selected_key,
-            show_value_view,
-            selected_value,
-            selected_value_text_input_state,
-            save_button_state,
+            server_tabs,
+            current_server_tab_index,
+            conn_form_state,
         }
     }
 
@@ -87,76 +99,191 @@ impl Sandbox for RedisViewer {
     fn update(&mut self, message: Self::Message) {
         match message {
             Message::KeySelected(i) => {
-                let key = self.keys[i].clone();
-                self.selected_key = key.clone();
-                self.selected_value = get_redis_value(&mut self.redis, key)
-                    .expect("failed to get value for selected redis key");
-                self.show_value_view = true;
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                let key = current_server_tab.keys[i].clone();
+                current_server_tab.value_edit_state.selected_key = key.clone();
+                current_server_tab.value_edit_state.selected_value =
+                    get_redis_value(&mut current_server_tab.redis, key)
+                        .expect("failed to get value for selected redis key");
+                current_server_tab.value_edit_state.show_value_view = true;
             }
             Message::SelectedValueChanged(s) => {
-                self.selected_value = s;
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                current_server_tab.value_edit_state.selected_value = s;
             }
             Message::SelectedValueSaved => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
                 set_redis_value(
-                    &mut self.redis,
-                    self.selected_key.clone(),
-                    self.selected_value.clone(),
+                    &mut current_server_tab.redis,
+                    current_server_tab.value_edit_state.selected_key.clone(),
+                    current_server_tab.value_edit_state.selected_value.clone(),
                 )
                 .expect("failed to set redis value");
+            }
+            Message::ConnNameChanged(s) => {
+                self.conn_form_state.conn_name_value = s;
+            }
+            Message::ConnValueChanged(s) => {
+                self.conn_form_state.conn_value = s;
+            }
+            Message::ConnectRedis => {
+                let conn = self.conn_form_state.conn_value.clone();
+                let mut redis = connect_redis(&conn).expect("failed to get redis connection");
+                let keys = get_all_keys(&mut redis).expect("failed to get keys");
+                let namespaces = convert_keys_to_namespaces(&keys);
+                let keys_scrollbar_state = KeysScrollbarState {
+                    state: scrollable::State::new(),
+                };
+                let mut key_buttons = Vec::<(String, button::State)>::new();
+                for key in keys.iter() {
+                    key_buttons.push((key.clone(), button::State::default()));
+                }
+
+                let selected_key = String::new();
+                let show_value_view = false;
+                let selected_value = String::new();
+                let selected_value_text_input_state = text_input::State::default();
+
+                let save_button_state = button::State::default();
+
+                let value_edit_state = ValueEditState {
+                    selected_key,
+                    show_value_view,
+                    selected_value,
+                    selected_value_text_input_state,
+                    save_button_state,
+                };
+
+                let name = self.conn_form_state.conn_name_value.clone();
+
+                let server_tab = ServerTab {
+                    name,
+                    redis,
+                    keys,
+                    keys_scrollbar_state,
+                    namespaces,
+                    key_buttons,
+                    value_edit_state,
+                };
+                self.current_server_tab_index = Some(self.server_tabs.insert(server_tab));
+                self.conn_form_state.show_connection_form = false;
             }
         }
     }
 
     fn view(&mut self) -> Element<Message> {
-        let keys = self.key_buttons.iter_mut().enumerate().fold(
-            Scrollable::new(&mut self.keys_scrollbar_state.state)
-                .padding(0)
-                .align_items(Align::Start)
-                .width(Length::FillPortion(2))
-                .height(Length::Fill),
-            |scrollable, (i, (key, state))| {
-                scrollable.push(
-                    Button::new(state, Text::new(key.clone())).on_press(Message::KeySelected(i)),
-                )
-            },
-        );
-
-        let value_column = if self.show_value_view {
-            Column::new()
-                .align_items(Align::Start)
-                .width(Length::FillPortion(3))
-                .height(Length::Fill)
-                //.padding(20)
-                .push(Row::new().padding(20).push(Text::new(&self.selected_key)))
-                .push(
-                    Row::new().padding(20).push(
-                        TextInput::new(
-                            &mut self.selected_value_text_input_state,
-                            "Enter your redis value here.",
-                            &self.selected_value,
-                            Message::SelectedValueChanged,
+        let content =
+            if self.conn_form_state.show_connection_form || self.current_server_tab_index == None {
+                let connection_form = Column::new()
+                    .push(TextInput::new(
+                        &mut self.conn_form_state.conn_name_text_input_state,
+                        "Enter the nickname for your redis server here.",
+                        &self.conn_form_state.conn_name_value,
+                        Message::ConnNameChanged,
+                    ))
+                    .push(TextInput::new(
+                        &mut self.conn_form_state.conn_text_input_state,
+                        "Enter the url for your redis server here.",
+                        &self.conn_form_state.conn_value,
+                        Message::ConnValueChanged,
+                    ))
+                    .push(
+                        Button::new(
+                            &mut self.conn_form_state.connect_button,
+                            Text::new("Connect"),
                         )
-                        .width(Length::Fill)
-                        .padding(10),
-                    ),
-                )
-                .push(
-                    Button::new(&mut self.save_button_state, Text::new("Save"))
-                        .on_press(Message::SelectedValueSaved),
-                )
-        } else {
-            Column::new()
-                .align_items(Align::Start)
-                .width(Length::FillPortion(3))
-                .height(Length::Fill)
-                .padding(20)
-        };
+                        .on_press(Message::ConnectRedis),
+                    );
 
-        let content = Row::new()
-            .align_items(Align::Center)
-            .spacing(20)
-            .push(keys)
-            .push(value_column);
+                Row::new()
+                    .align_items(Align::Center)
+                    .spacing(20)
+                    .push(connection_form)
+            } else {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                let keys = current_server_tab.key_buttons.iter_mut().enumerate().fold(
+                    Scrollable::new(&mut current_server_tab.keys_scrollbar_state.state)
+                        .padding(0)
+                        .align_items(Align::Start)
+                        .width(Length::FillPortion(2))
+                        .height(Length::Fill),
+                    |scrollable, (i, (key, state))| {
+                        scrollable.push(
+                            Button::new(state, Text::new(key.clone()))
+                                .on_press(Message::KeySelected(i)),
+                        )
+                    },
+                );
+
+                let value_column = if current_server_tab.value_edit_state.show_value_view {
+                    Column::new()
+                        .align_items(Align::Start)
+                        .width(Length::FillPortion(3))
+                        .height(Length::Fill)
+                        .push(
+                            Row::new()
+                                .padding(20)
+                                .push(Text::new(&current_server_tab.value_edit_state.selected_key)),
+                        )
+                        .push(
+                            Row::new().padding(20).push(
+                                TextInput::new(
+                                    &mut current_server_tab
+                                        .value_edit_state
+                                        .selected_value_text_input_state,
+                                    "Enter your redis value here.",
+                                    &current_server_tab.value_edit_state.selected_value,
+                                    Message::SelectedValueChanged,
+                                )
+                                .width(Length::Fill)
+                                .padding(10),
+                            ),
+                        )
+                        .push(
+                            Button::new(
+                                &mut current_server_tab.value_edit_state.save_button_state,
+                                Text::new("Save"),
+                            )
+                            .on_press(Message::SelectedValueSaved),
+                        )
+                } else {
+                    Column::new()
+                        .align_items(Align::Start)
+                        .width(Length::FillPortion(3))
+                        .height(Length::Fill)
+                        .padding(20)
+                };
+
+                Row::new()
+                    .align_items(Align::Center)
+                    .spacing(20)
+                    .push(keys)
+                    .push(value_column)
+            };
 
         let theme = style::Theme::Dark;
 
