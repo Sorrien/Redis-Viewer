@@ -1,0 +1,45 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'icy_redis_viewer'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=icy_redis_viewer",
+                    "--package=icy_redis_viewer"
+                ],
+                "filter": {
+                    "name": "icy_redis_viewer",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'icy_redis_viewer'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=icy_redis_viewer",
+                    "--package=icy_redis_viewer"
+                ],
+                "filter": {
+                    "name": "icy_redis_viewer",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
