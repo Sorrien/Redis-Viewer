@@ -7,7 +7,7 @@ use iced::{
     Sandbox, Scrollable, Settings, Text, TextInput,
 };
 use redis::{Commands, Connection};
-use std::{collections::HashMap, env::current_exe, thread::current};
+use std::collections::HashMap;
 
 fn main() -> iced::Result {
     RedisViewer::run(Settings::default())
@@ -18,6 +18,8 @@ struct RedisViewer {
     current_server_tab_index: Option<Index>,
     conn_form_state: ConnectionFormState,
     keys_refresh_button_state: button::State,
+    tab_buttons: Vec<(String, Index, button::State)>,
+    new_tab_button: button::State,
 }
 
 struct KeysScrollbarState {
@@ -60,6 +62,8 @@ pub enum Message {
     ConnValueChanged(String),
     ConnectRedis,
     RefreshKeys,
+    ChangeTab(Index),
+    NewTab,
 }
 
 impl Sandbox for RedisViewer {
@@ -88,12 +92,16 @@ impl Sandbox for RedisViewer {
         };
 
         let refresh_button_state = button::State::default();
+        let tab_buttons = Vec::<(String, Index, button::State)>::new();
+        let new_tab_button = button::State::default();
 
         RedisViewer {
             server_tabs,
             current_server_tab_index,
             conn_form_state,
             keys_refresh_button_state: refresh_button_state,
+            tab_buttons,
+            new_tab_button,
         }
     }
 
@@ -189,6 +197,12 @@ impl Sandbox for RedisViewer {
                     value_edit_state,
                 };
                 self.current_server_tab_index = Some(self.server_tabs.insert(server_tab));
+                self.tab_buttons.push((
+                    self.conn_form_state.conn_name_value.clone(),
+                    self.current_server_tab_index
+                        .expect("failed to get current server index"),
+                    button::State::default(),
+                ));
                 self.conn_form_state.show_connection_form = false;
             }
             Message::RefreshKeys => {
@@ -213,6 +227,13 @@ impl Sandbox for RedisViewer {
                 current_server_tab.namespaces = namespaces;
                 current_server_tab.keys_scrollbar_state = keys_scrollbar_state;
                 current_server_tab.key_buttons = key_buttons;
+            }
+            Message::ChangeTab(i) => {
+                self.current_server_tab_index = Some(i);
+            }
+            Message::NewTab => {
+                self.conn_form_state.show_connection_form = true;
+                self.current_server_tab_index = None;
             }
         }
     }
@@ -254,11 +275,33 @@ impl Sandbox for RedisViewer {
                     )
                     .expect("failed to find current server tab in arena");
 
+                let tabs = self
+                    .tab_buttons
+                    .iter_mut()
+                    .enumerate()
+                    .fold(
+                        Row::new()
+                            //.padding(10)
+                            .align_items(Align::Start)
+                            .width(Length::Fill)
+                            .height(Length::Shrink),
+                        |row, (_i, (name, index, state))| {
+                            row.push(
+                                Button::new(state, Text::new(name.clone()))
+                                    .on_press(Message::ChangeTab(*index)),
+                            )
+                        },
+                    )
+                    .push(
+                        Button::new(&mut self.new_tab_button, Text::new("New"))
+                            .on_press(Message::NewTab),
+                    );
+
                 let keys = current_server_tab.key_buttons.iter_mut().enumerate().fold(
                     Scrollable::new(&mut current_server_tab.keys_scrollbar_state.state)
                         .padding(0)
                         .align_items(Align::Start)
-                        .width(Length::FillPortion(2))
+                        .width(Length::Fill)
                         .height(Length::Fill),
                     |scrollable, (i, (key, state))| {
                         scrollable.push(
@@ -311,7 +354,8 @@ impl Sandbox for RedisViewer {
 
                 let tab_controls = Row::new()
                     .width(Length::Fill)
-                    .padding(10)
+                    .height(Length::Shrink)
+                    //.padding(10)
                     .push(Text::new(&current_server_tab.name))
                     .push(
                         Button::new(&mut self.keys_refresh_button_state, Text::new("Refresh"))
@@ -320,6 +364,7 @@ impl Sandbox for RedisViewer {
 
                 let viewer_row = Row::new()
                     .width(Length::Fill)
+                    .height(Length::Fill)
                     .padding(10)
                     .push(keys)
                     .push(value_column);
@@ -327,6 +372,7 @@ impl Sandbox for RedisViewer {
                 Column::new()
                     .align_items(Align::Center)
                     .spacing(20)
+                    .push(tabs)
                     .push(tab_controls)
                     .push(viewer_row)
             };
