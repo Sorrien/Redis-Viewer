@@ -29,6 +29,11 @@ pub(crate) mod redislogic {
         Ok(())
     }
 
+    pub fn delete_redis_key(con: &mut redis::Connection, key: String) -> redis::RedisResult<()> {
+        let _: () = con.del(key)?;
+        Ok(())
+    }
+
     pub fn convert_keys_to_namespaces(keys: &Vec<String>) -> HashMap<String, RedisNamespace> {
         let mut namespaces = HashMap::<String, RedisNamespace>::new();
 
