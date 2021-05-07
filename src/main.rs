@@ -38,7 +38,7 @@ struct ServerTab {
     name: String,
     redis: redis::Connection,
     keys: Vec<String>,
-    namespaces: HashMap<String, RedisNamespace>,
+    //namespaces: HashMap<String, RedisNamespace>,
     keys_scrollbar_state: KeysScrollbarState,
     key_buttons: Vec<(String, button::State)>,
     value_edit_state: ValueEditState,
@@ -161,7 +161,7 @@ impl Sandbox for RedisViewer {
                 let conn = self.conn_form_state.conn_value.clone();
                 let mut redis = connect_redis(&conn).expect("failed to get redis connection");
                 let keys = get_all_keys(&mut redis).expect("failed to get keys");
-                let namespaces = convert_keys_to_namespaces(&keys);
+                //let namespaces = convert_keys_to_namespaces(&keys);
                 let keys_scrollbar_state = KeysScrollbarState {
                     state: scrollable::State::new(),
                 };
@@ -192,7 +192,7 @@ impl Sandbox for RedisViewer {
                     redis,
                     keys,
                     keys_scrollbar_state,
-                    namespaces,
+                    //namespaces,
                     key_buttons,
                     value_edit_state,
                 };
@@ -214,7 +214,7 @@ impl Sandbox for RedisViewer {
                     )
                     .expect("failed to find current server tab in arena");
                 let keys = get_all_keys(&mut current_server_tab.redis).expect("failed to get keys");
-                let namespaces = convert_keys_to_namespaces(&keys);
+                //let namespaces = convert_keys_to_namespaces(&keys);
                 let keys_scrollbar_state = KeysScrollbarState {
                     state: scrollable::State::new(),
                 };
@@ -224,7 +224,7 @@ impl Sandbox for RedisViewer {
                 }
 
                 current_server_tab.keys = keys;
-                current_server_tab.namespaces = namespaces;
+                //current_server_tab.namespaces = namespaces;
                 current_server_tab.keys_scrollbar_state = keys_scrollbar_state;
                 current_server_tab.key_buttons = key_buttons;
             }
@@ -242,24 +242,36 @@ impl Sandbox for RedisViewer {
         let content =
             if self.conn_form_state.show_connection_form || self.current_server_tab_index == None {
                 let connection_form = Column::new()
-                    .push(TextInput::new(
-                        &mut self.conn_form_state.conn_name_text_input_state,
-                        "Enter the nickname for your redis server here.",
-                        &self.conn_form_state.conn_name_value,
-                        Message::ConnNameChanged,
-                    ))
-                    .push(TextInput::new(
-                        &mut self.conn_form_state.conn_text_input_state,
-                        "Enter the url for your redis server here.",
-                        &self.conn_form_state.conn_value,
-                        Message::ConnValueChanged,
-                    ))
                     .push(
-                        Button::new(
-                            &mut self.conn_form_state.connect_button,
-                            Text::new("Connect"),
-                        )
-                        .on_press(Message::ConnectRedis),
+                        Row::new()
+                            .padding(10)
+                            .push(
+                                TextInput::new(
+                                    &mut self.conn_form_state.conn_name_text_input_state,
+                                    "Enter the nickname for your redis server here.",
+                                    &self.conn_form_state.conn_name_value,
+                                    Message::ConnNameChanged,
+                                )
+                                .padding(5),
+                            )
+                            .push(
+                                TextInput::new(
+                                    &mut self.conn_form_state.conn_text_input_state,
+                                    "Enter the url for your redis server here.",
+                                    &self.conn_form_state.conn_value,
+                                    Message::ConnValueChanged,
+                                )
+                                .padding(5),
+                            ),
+                    )
+                    .push(
+                        Row::new().padding(10).push(
+                            Button::new(
+                                &mut self.conn_form_state.connect_button,
+                                Text::new("Connect"),
+                            )
+                            .on_press(Message::ConnectRedis),
+                        ),
                     );
 
                 Column::new()
@@ -281,7 +293,6 @@ impl Sandbox for RedisViewer {
                     .enumerate()
                     .fold(
                         Row::new()
-                            //.padding(10)
                             .align_items(Align::Start)
                             .width(Length::Fill)
                             .height(Length::Shrink),
@@ -305,8 +316,11 @@ impl Sandbox for RedisViewer {
                         .height(Length::Fill),
                     |scrollable, (i, (key, state))| {
                         scrollable.push(
-                            Button::new(state, Text::new(key.clone()))
-                                .on_press(Message::KeySelected(i)),
+                            Row::new().push(
+                                Button::new(state, Text::new(key.clone()))
+                                    .padding(5)
+                                    .on_press(Message::KeySelected(i)),
+                            ),
                         )
                     },
                 );
@@ -355,11 +369,16 @@ impl Sandbox for RedisViewer {
                 let tab_controls = Row::new()
                     .width(Length::Fill)
                     .height(Length::Shrink)
-                    //.padding(10)
-                    .push(Text::new(&current_server_tab.name))
                     .push(
-                        Button::new(&mut self.keys_refresh_button_state, Text::new("Refresh"))
-                            .on_press(Message::RefreshKeys),
+                        Column::new()
+                            .padding(10)
+                            .push(Text::new(&current_server_tab.name)),
+                    )
+                    .push(
+                        Column::new().padding(5).push(
+                            Button::new(&mut self.keys_refresh_button_state, Text::new("Refresh"))
+                                .on_press(Message::RefreshKeys),
+                        ),
                     );
 
                 let viewer_row = Row::new()
