@@ -1,6 +1,10 @@
+#![feature(default_free_fn)]
+
 extern crate redis;
 mod redislogic;
 mod style;
+
+use std::default::default;
 
 use crate::redislogic::redislogic::get_redis_value;
 use generational_arena::{Arena, Index};
@@ -17,20 +21,11 @@ pub struct RedisViewer {
     keys_refresh_button_state: button::State,
     tab_buttons: Vec<(String, Index, button::State)>,
     new_tab_button: button::State,
+    create_key_button: button::State,
 }
 
 struct KeysScrollbarState {
     state: scrollable::State,
-}
-
-#[derive(Default)]
-struct ValueEditState {
-    selected_key: String,
-    show_value_view: bool,
-    selected_value: String,
-    selected_value_text_input_state: text_input::State,
-    save_button_state: button::State,
-    delete_button_state: button::State,
 }
 
 struct ServerTab {
@@ -40,7 +35,7 @@ struct ServerTab {
     //namespaces: HashMap<String, RedisNamespace>,
     keys_scrollbar_state: KeysScrollbarState,
     key_buttons: Vec<(String, button::State)>,
-    value_edit_state: ValueEditState,
+    editor_state: EditorState,
 }
 
 struct ConnectionFormState {
@@ -64,6 +59,61 @@ pub enum Message {
     RefreshKeys,
     ChangeTab(Index),
     NewTab,
+    OpenCreateKeyForm,
+    CreateKey,
+    CreateKeyChanged(String),
+    CreateValueChanged(String),
+}
+
+#[derive(Debug, Clone)]
+enum EditorState {
+    Empty,
+    Edit(ValueEditState),
+    Create(KeyCreateState),
+}
+
+#[derive(Debug, Clone, Default)]
+struct ValueEditState {
+    key: String,
+    value: String,
+    value_input_state: text_input::State,
+    save_button_state: button::State,
+    delete_button_state: button::State,
+}
+
+#[derive(Debug, Clone, Default)]
+struct KeyCreateState {
+    key: String,
+    key_input_state: text_input::State,
+    value: String,
+    value_input_state: text_input::State,
+    create_button_state: button::State,
+}
+
+impl RedisViewer {
+    fn refresh_keys(&mut self) {
+        let current_server_tab = self
+            .server_tabs
+            .get_mut(
+                self.current_server_tab_index
+                    .expect("failed to find current server tab index"),
+            )
+            .expect("failed to find current server tab in arena");
+        let keys = get_all_keys(&mut current_server_tab.redis).expect("failed to get keys");
+        //let namespaces = convert_keys_to_namespaces(&keys);
+        let keys_scrollbar_state = KeysScrollbarState {
+            state: scrollable::State::new(),
+        };
+        let mut key_buttons = Vec::<(String, button::State)>::new();
+        for key in keys.iter() {
+            key_buttons.push((key.clone(), button::State::default()));
+        }
+
+        current_server_tab.keys = keys;
+        //current_server_tab.namespaces = namespaces;
+        current_server_tab.keys_scrollbar_state = keys_scrollbar_state;
+        current_server_tab.key_buttons = key_buttons;
+    }
 }
 
 impl Sandbox for RedisViewer {
@@ -91,17 +141,19 @@ impl Sandbox for RedisViewer {
             connect_button,
         };
 
-        let refresh_button_state = button::State::default();
+        let keys_refresh_button_state = button::State::default();
         let tab_buttons = Vec::<(String, Index, button::State)>::new();
         let new_tab_button = button::State::default();
+        let create_key_button = button::State::default();
 
         RedisViewer {
             server_tabs,
             current_server_tab_index,
             conn_form_state,
-            keys_refresh_button_state: refresh_button_state,
+            keys_refresh_button_state,
             tab_buttons,
             new_tab_button,
+            create_key_button,
         }
     }
 
@@ -120,11 +172,13 @@ impl Sandbox for RedisViewer {
                     )
                     .expect("failed to find current server tab in arena");
                 let key = current_server_tab.keys[i].clone();
-                current_server_tab.value_edit_state.selected_key = key.clone();
-                current_server_tab.value_edit_state.selected_value =
-                    get_redis_value(&mut current_server_tab.redis, key)
-                        .expect("failed to get value for selected redis key");
-                current_server_tab.value_edit_state.show_value_view = true;
+                let value = get_redis_value(&mut current_server_tab.redis, &key)
+                    .expect("failed to get value for selected redis key");
+                current_server_tab.editor_state = EditorState::Edit(ValueEditState {
+                    key: key.clone(),
+                    value,
+                    ..default()
+                });
             }
             Message::SelectedValueChanged(s) => {
                 let current_server_tab = self
@@ -134,7 +188,13 @@ impl Sandbox for RedisViewer {
                             .expect("failed to find current server tab index"),
                     )
                     .expect("failed to find current server tab in arena");
-                current_server_tab.value_edit_state.selected_value = s;
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(edit_state) => {
+                        edit_state.value = s;
+                    }
+                    EditorState::Create(_) => {}
+                }
             }
             Message::SelectedValueSaved => {
                 let current_server_tab = self
@@ -144,12 +204,18 @@ impl Sandbox for RedisViewer {
                             .expect("failed to find current server tab index"),
                     )
                     .expect("failed to find current server tab in arena");
-                set_redis_value(
-                    &mut current_server_tab.redis,
-                    current_server_tab.value_edit_state.selected_key.clone(),
-                    current_server_tab.value_edit_state.selected_value.clone(),
-                )
-                .expect("failed to set redis value");
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(edit_state) => {
+                        set_redis_value(
+                            &mut current_server_tab.redis,
+                            edit_state.key.clone(),
+                            edit_state.value.clone(),
+                        )
+                        .expect("failed to set redis value");
+                    }
+                    EditorState::Create(_) => {}
+                }
             }
             Message::SelectedValueDeleted => {
                 let current_server_tab = self
@@ -160,12 +226,16 @@ impl Sandbox for RedisViewer {
                     )
                     .expect("failed to find current server tab in arena");
 
-                delete_redis_key(
-                    &mut current_server_tab.redis,
-                    current_server_tab.value_edit_state.selected_key.clone(),
-                )
-                .expect("failed to delete key");
-                current_server_tab.value_edit_state = ValueEditState::default();
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(edit_state) => {
+                        delete_redis_key(&mut current_server_tab.redis, edit_state.key.clone())
+                            .expect("failed to delete key");
+                        current_server_tab.editor_state = EditorState::Empty;
+                    }
+                    EditorState::Create(_) => {}
+                }
+                self.refresh_keys();
             }
             Message::ConnNameChanged(s) => {
                 self.conn_form_state.conn_name_value = s;
@@ -186,8 +256,6 @@ impl Sandbox for RedisViewer {
                     key_buttons.push((key.clone(), button::State::default()));
                 }
 
-                let value_edit_state = ValueEditState::default();
-
                 let name = self.conn_form_state.conn_name_value.clone();
 
                 let server_tab = ServerTab {
@@ -197,7 +265,7 @@ impl Sandbox for RedisViewer {
                     keys_scrollbar_state,
                     //namespaces,
                     key_buttons,
-                    value_edit_state,
+                    editor_state: EditorState::Empty,
                 };
                 self.current_server_tab_index = Some(self.server_tabs.insert(server_tab));
                 self.tab_buttons.push((
@@ -209,27 +277,7 @@ impl Sandbox for RedisViewer {
                 self.conn_form_state.show_connection_form = false;
             }
             Message::RefreshKeys => {
-                let current_server_tab = self
-                    .server_tabs
-                    .get_mut(
-                        self.current_server_tab_index
-                            .expect("failed to find current server tab index"),
-                    )
-                    .expect("failed to find current server tab in arena");
-                let keys = get_all_keys(&mut current_server_tab.redis).expect("failed to get keys");
-                //let namespaces = convert_keys_to_namespaces(&keys);
-                let keys_scrollbar_state = KeysScrollbarState {
-                    state: scrollable::State::new(),
-                };
-                let mut key_buttons = Vec::<(String, button::State)>::new();
-                for key in keys.iter() {
-                    key_buttons.push((key.clone(), button::State::default()));
-                }
-
-                current_server_tab.keys = keys;
-                //current_server_tab.namespaces = namespaces;
-                current_server_tab.keys_scrollbar_state = keys_scrollbar_state;
-                current_server_tab.key_buttons = key_buttons;
+                self.refresh_keys();
             }
             Message::ChangeTab(i) => {
                 self.current_server_tab_index = Some(i);
@@ -238,10 +286,79 @@ impl Sandbox for RedisViewer {
                 self.conn_form_state.show_connection_form = true;
                 self.current_server_tab_index = None;
             }
+            Message::OpenCreateKeyForm => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+
+                current_server_tab.editor_state = EditorState::Create(KeyCreateState::default());
+            }
+            Message::CreateKey => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(_) => {}
+                    EditorState::Create(state) => {
+                        set_redis_value(
+                            &mut current_server_tab.redis,
+                            state.key.clone(),
+                            state.value.clone(),
+                        )
+                        .expect("failed to set redis value");
+                        current_server_tab.editor_state = EditorState::Empty;
+                    }
+                }
+                self.refresh_keys();
+            }
+            Message::CreateKeyChanged(s) => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(_) => {}
+                    EditorState::Create(state) => {
+                        state.key = s;
+                    }
+                }
+            }
+            Message::CreateValueChanged(s) => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                match &mut current_server_tab.editor_state {
+                    EditorState::Empty => {}
+                    EditorState::Edit(_) => {}
+                    EditorState::Create(state) => {
+                        state.value = s;
+                    }
+                }
+            }
         }
     }
 
     fn view(&mut self) -> Element<Message> {
+        let content = Column::new().align_items(Align::Center).spacing(20);
+
         let content = if self.conn_form_state.show_connection_form
             || self.current_server_tab_index == None
         {
@@ -278,10 +395,7 @@ impl Sandbox for RedisViewer {
                     ),
                 );
 
-            Column::new()
-                .align_items(Align::Center)
-                .spacing(20)
-                .push(connection_form)
+            content.push(connection_form)
         } else {
             let current_server_tab = self
                 .server_tabs
@@ -329,24 +443,22 @@ impl Sandbox for RedisViewer {
                 },
             );
 
-            let value_column = if current_server_tab.value_edit_state.show_value_view {
-                Column::new()
-                    .align_items(Align::Start)
-                    .width(Length::FillPortion(3))
-                    .height(Length::Fill)
-                    .push(
-                        Row::new()
-                            .padding(20)
-                            .push(Text::new(&current_server_tab.value_edit_state.selected_key)),
-                    )
+            let editor_column = Column::new()
+                .align_items(Align::Start)
+                .width(Length::FillPortion(3))
+                .height(Length::Fill)
+                .padding(20);
+
+            let editor_column = match &mut current_server_tab.editor_state {
+                EditorState::Empty => editor_column,
+                EditorState::Edit(state) => editor_column
+                    .push(Row::new().padding(20).push(Text::new(&state.key)))
                     .push(
                         Row::new().padding(20).push(
                             TextInput::new(
-                                &mut current_server_tab
-                                    .value_edit_state
-                                    .selected_value_text_input_state,
+                                &mut state.value_input_state,
                                 "Enter your redis value here.",
-                                &current_server_tab.value_edit_state.selected_value,
+                                &state.value,
                                 Message::SelectedValueChanged,
                             )
                             .width(Length::Fill)
@@ -357,26 +469,45 @@ impl Sandbox for RedisViewer {
                         Row::new()
                             .padding(20)
                             .push(
-                                Button::new(
-                                    &mut current_server_tab.value_edit_state.save_button_state,
-                                    Text::new("Save"),
-                                )
-                                .on_press(Message::SelectedValueSaved),
+                                Button::new(&mut state.save_button_state, Text::new("Save"))
+                                    .on_press(Message::SelectedValueSaved),
                             )
                             .push(
-                                Button::new(
-                                    &mut current_server_tab.value_edit_state.delete_button_state,
-                                    Text::new("Delete"),
-                                )
-                                .on_press(Message::SelectedValueDeleted),
+                                Button::new(&mut state.delete_button_state, Text::new("Delete"))
+                                    .on_press(Message::SelectedValueDeleted),
                             ),
+                    ),
+                EditorState::Create(state) => editor_column
+                    .push(
+                        Row::new().padding(20).push(
+                            TextInput::new(
+                                &mut state.key_input_state,
+                                "Enter your redis key here.",
+                                &state.key,
+                                Message::CreateKeyChanged,
+                            )
+                            .width(Length::Fill)
+                            .padding(10),
+                        ),
                     )
-            } else {
-                Column::new()
-                    .align_items(Align::Start)
-                    .width(Length::FillPortion(3))
-                    .height(Length::Fill)
-                    .padding(20)
+                    .push(
+                        Row::new().padding(20).push(
+                            TextInput::new(
+                                &mut state.value_input_state,
+                                "Enter your redis value here.",
+                                &state.value,
+                                Message::CreateValueChanged,
+                            )
+                            .width(Length::Fill)
+                            .padding(10),
+                        ),
+                    )
+                    .push(
+                        Row::new().padding(20).push(
+                            Button::new(&mut state.create_button_state, Text::new("Create"))
+                                .on_press(Message::CreateKey),
+                        ),
+                    ),
             };
 
             let tab_controls = Row::new()
@@ -392,6 +523,12 @@ impl Sandbox for RedisViewer {
                         Button::new(&mut self.keys_refresh_button_state, Text::new("Refresh"))
                             .on_press(Message::RefreshKeys),
                     ),
+                )
+                .push(
+                    Column::new().padding(5).push(
+                        Button::new(&mut self.create_key_button, Text::new("New Key"))
+                            .on_press(Message::OpenCreateKeyForm),
+                    ),
                 );
 
             let viewer_row = Row::new()
@@ -399,24 +536,17 @@ impl Sandbox for RedisViewer {
                 .height(Length::Fill)
                 .padding(10)
                 .push(keys)
-                .push(value_column);
+                .push(editor_column);
 
-            Column::new()
-                .align_items(Align::Center)
-                .spacing(20)
-                .push(tabs)
-                .push(tab_controls)
-                .push(viewer_row)
+            content.push(tabs).push(tab_controls).push(viewer_row)
         };
-
-        let theme = style::Theme::Dark;
 
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .center_x()
             .center_y()
-            .style(theme)
+            .style(style::Theme::Dark)
             .into()
     }
 

@@ -12,10 +12,7 @@ pub(crate) mod redislogic {
         Ok(all_keys)
     }
 
-    pub fn get_redis_value(
-        redis: &mut redis::Connection,
-        key: String,
-    ) -> redis::RedisResult<String> {
+    pub fn get_redis_value(redis: &mut redis::Connection, key: &str) -> redis::RedisResult<String> {
         let value: String = redis.get(key)?;
         Ok(value)
     }
