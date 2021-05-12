@@ -4,7 +4,7 @@ extern crate redis;
 mod redislogic;
 mod style;
 
-use std::default::default;
+use std::{collections::HashMap, default::default};
 
 use crate::redislogic::redislogic::get_redis_value;
 use generational_arena::{Arena, Index};
@@ -12,7 +12,10 @@ use iced::{
     button, scrollable, text_input, Align, Button, Column, Container, Element, Length, Row,
     Sandbox, Scrollable, Text, TextInput,
 };
-use redislogic::redislogic::{connect_redis, delete_redis_key, get_all_keys, set_redis_value};
+use redislogic::redislogic::{
+    connect_redis, convert_keys_to_namespaces, delete_redis_key, get_all_keys, set_redis_value,
+    RedisNamespace,
+};
 
 pub struct RedisViewer {
     server_tabs: Arena<ServerTab>,
@@ -24,6 +27,7 @@ pub struct RedisViewer {
     create_key_button: button::State,
 }
 
+#[derive(Default)]
 struct KeysScrollbarState {
     state: scrollable::State,
 }
@@ -32,7 +36,8 @@ struct ServerTab {
     name: String,
     redis: redis::Connection,
     keys: Vec<String>,
-    //namespaces: HashMap<String, RedisNamespace>,
+    namespaces: HashMap<String, RedisNamespace>,
+    namespaces_view: Vec<NamespaceView>,
     keys_scrollbar_state: KeysScrollbarState,
     key_buttons: Vec<(String, button::State)>,
     editor_state: EditorState,
@@ -49,7 +54,7 @@ struct ConnectionFormState {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    KeySelected(usize),
+    KeySelected(String),
     SelectedValueChanged(String),
     SelectedValueSaved,
     SelectedValueDeleted,
@@ -63,6 +68,7 @@ pub enum Message {
     CreateKey,
     CreateKeyChanged(String),
     CreateValueChanged(String),
+    NamespaceExpandToggle(Vec<usize>),
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +96,37 @@ struct KeyCreateState {
     create_button_state: button::State,
 }
 
+struct NamespaceView {
+    namespace: String,
+    expand_button_state: button::State,
+    is_expanded: bool,
+    sub_namespaces: Vec<NamespaceView>,
+    key_buttons: Vec<(String, button::State)>,
+}
+
+impl NamespaceView {
+    fn new(redis_namespace: &RedisNamespace) -> Self {
+        let mut key_buttons = Vec::<(String, button::State)>::new();
+        for key in redis_namespace.keys.iter() {
+            key_buttons.push((key.clone(), button::State::default()));
+        }
+
+        let sub_namespaces = redis_namespace
+            .sub_namespaces
+            .iter()
+            .map(|(_, ns)| NamespaceView::new(ns))
+            .collect();
+
+        NamespaceView {
+            namespace: redis_namespace.name.clone(),
+            expand_button_state: button::State::default(),
+            is_expanded: false,
+            sub_namespaces,
+            key_buttons,
+        }
+    }
+}
+
 impl RedisViewer {
     fn refresh_keys(&mut self) {
         let current_server_tab = self
@@ -100,20 +137,74 @@ impl RedisViewer {
             )
             .expect("failed to find current server tab in arena");
         let keys = get_all_keys(&mut current_server_tab.redis).expect("failed to get keys");
-        //let namespaces = convert_keys_to_namespaces(&keys);
-        let keys_scrollbar_state = KeysScrollbarState {
-            state: scrollable::State::new(),
-        };
+        let namespaces = convert_keys_to_namespaces(&keys);
+        let namespaces_view = create_namespace_views(&namespaces);
         let mut key_buttons = Vec::<(String, button::State)>::new();
         for key in keys.iter() {
             key_buttons.push((key.clone(), button::State::default()));
         }
 
         current_server_tab.keys = keys;
-        //current_server_tab.namespaces = namespaces;
-        current_server_tab.keys_scrollbar_state = keys_scrollbar_state;
+        current_server_tab.namespaces = namespaces;
+        current_server_tab.keys_scrollbar_state = KeysScrollbarState::default();
         current_server_tab.key_buttons = key_buttons;
+        current_server_tab.namespaces_view = namespaces_view;
     }
+}
+
+fn create_namespace_views(namespaces: &HashMap<String, RedisNamespace>) -> Vec<NamespaceView> {
+    let namespaces_view = namespaces
+        .iter()
+        .map(|(_, ns)| NamespaceView::new(ns))
+        .collect();
+
+    namespaces_view
+}
+
+fn create_namespace_rows(namespace: &mut NamespaceView, indices: Vec<usize>) -> Row<Message> {
+    let expander_text = if namespace.is_expanded {
+        Text::new("^")
+    } else {
+        Text::new(">")
+    };
+
+    let ns_row = Row::new()
+        .push(
+            Button::new(&mut namespace.expand_button_state, expander_text)
+                .padding(5)
+                .on_press(Message::NamespaceExpandToggle(indices.clone())),
+        )
+        .push(Text::new(namespace.namespace.clone()));
+
+    let column = Column::new().padding(indices.len() as u16 * 2).push(ns_row);
+
+    let column = if namespace.is_expanded {
+        column
+            .push(namespace.sub_namespaces.iter_mut().enumerate().fold(
+                Column::new(),
+                |col, (i, sub_ns)| {
+                    let mut current_indices = indices.clone();
+                    current_indices.push(i);
+                    col.push(create_namespace_rows(sub_ns, current_indices))
+                },
+            ))
+            .push(Row::new().push(namespace.key_buttons.iter_mut().fold(
+                Column::new(),
+                |col, (key, state)| {
+                    col.push(
+                        Row::new().push(
+                            Button::new(state, Text::new(key.clone()))
+                                .padding(5)
+                                .on_press(Message::KeySelected(key.clone())),
+                        ),
+                    )
+                },
+            )))
+    } else {
+        column
+    };
+
+    Row::new().push(column)
 }
 
 impl Sandbox for RedisViewer {
@@ -163,7 +254,7 @@ impl Sandbox for RedisViewer {
 
     fn update(&mut self, message: Self::Message) {
         match message {
-            Message::KeySelected(i) => {
+            Message::KeySelected(key) => {
                 let current_server_tab = self
                     .server_tabs
                     .get_mut(
@@ -171,7 +262,6 @@ impl Sandbox for RedisViewer {
                             .expect("failed to find current server tab index"),
                     )
                     .expect("failed to find current server tab in arena");
-                let key = current_server_tab.keys[i].clone();
                 let value = get_redis_value(&mut current_server_tab.redis, &key)
                     .expect("failed to get value for selected redis key");
                 current_server_tab.editor_state = EditorState::Edit(ValueEditState {
@@ -247,10 +337,9 @@ impl Sandbox for RedisViewer {
                 let conn = self.conn_form_state.conn_value.clone();
                 let mut redis = connect_redis(&conn).expect("failed to get redis connection");
                 let keys = get_all_keys(&mut redis).expect("failed to get keys");
-                //let namespaces = convert_keys_to_namespaces(&keys);
-                let keys_scrollbar_state = KeysScrollbarState {
-                    state: scrollable::State::new(),
-                };
+                let namespaces = convert_keys_to_namespaces(&keys);
+                let namespaces_view = create_namespace_views(&namespaces);
+                let keys_scrollbar_state = KeysScrollbarState::default();
                 let mut key_buttons = Vec::<(String, button::State)>::new();
                 for key in keys.iter() {
                     key_buttons.push((key.clone(), button::State::default()));
@@ -263,9 +352,10 @@ impl Sandbox for RedisViewer {
                     redis,
                     keys,
                     keys_scrollbar_state,
-                    //namespaces,
+                    namespaces,
                     key_buttons,
                     editor_state: EditorState::Empty,
+                    namespaces_view,
                 };
                 self.current_server_tab_index = Some(self.server_tabs.insert(server_tab));
                 self.tab_buttons.push((
@@ -353,6 +443,40 @@ impl Sandbox for RedisViewer {
                     }
                 }
             }
+            Message::NamespaceExpandToggle(indices) => {
+                let current_server_tab = self
+                    .server_tabs
+                    .get_mut(
+                        self.current_server_tab_index
+                            .expect("failed to find current server tab index"),
+                    )
+                    .expect("failed to find current server tab in arena");
+                let mut indices_iter = indices.iter();
+                let indices_first = indices_iter.next();
+                match indices_first {
+                    Some(first_index) => {
+                        let mut namespace_view =
+                            current_server_tab.namespaces_view.get_mut(*first_index);
+                        for i in indices_iter {
+                            namespace_view = match namespace_view {
+                                std::option::Option::Some(ns) => ns.sub_namespaces.get_mut(*i),
+                                std::option::Option::None => None,
+                            };
+                        }
+                        match namespace_view {
+                            Some(ns) => {
+                                ns.is_expanded = !ns.is_expanded;
+                            }
+                            None => {
+                                println!("failed to find namespace view for index");
+                            }
+                        }
+                    }
+                    None => {
+                        println!("no first index found in indices");
+                    }
+                }
+            }
         }
     }
 
@@ -426,22 +550,21 @@ impl Sandbox for RedisViewer {
                         .on_press(Message::NewTab),
                 );
 
-            let keys = current_server_tab.key_buttons.iter_mut().enumerate().fold(
-                Scrollable::new(&mut current_server_tab.keys_scrollbar_state.state)
-                    .padding(0)
-                    .align_items(Align::Start)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-                |scrollable, (i, (key, state))| {
-                    scrollable.push(
-                        Row::new().push(
-                            Button::new(state, Text::new(key.clone()))
-                                .padding(5)
-                                .on_press(Message::KeySelected(i)),
-                        ),
-                    )
-                },
-            );
+            let keys = current_server_tab
+                .namespaces_view
+                .iter_mut()
+                .enumerate()
+                .fold(
+                    Scrollable::new(&mut current_server_tab.keys_scrollbar_state.state)
+                        .padding(0)
+                        .align_items(Align::Start)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                    |scrollable, (i, ns)| {
+                        let row = create_namespace_rows(ns, [i].to_vec());
+                        scrollable.push(row)
+                    },
+                );
 
             let editor_column = Column::new()
                 .align_items(Align::Start)

@@ -1,6 +1,6 @@
 pub(crate) mod redislogic {
     use redis::{Commands, Connection};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, str::Split};
 
     pub fn connect_redis(connection: &str) -> redis::RedisResult<Connection> {
         let client = redis::Client::open(connection)?;
@@ -83,8 +83,8 @@ pub(crate) mod redislogic {
     }
 
     pub struct RedisNamespace {
-        name: String,
-        sub_namespaces: HashMap<String, RedisNamespace>,
-        keys: Vec<String>,
+        pub name: String,
+        pub sub_namespaces: HashMap<String, RedisNamespace>,
+        pub keys: Vec<String>,
     }
 }
