@@ -1,6 +1,6 @@
 pub(crate) mod redislogic {
     use redis::{Commands, Connection};
-    use std::{collections::HashMap, str::Split};
+    use std::collections::HashMap;
 
     pub fn connect_redis(connection: &str) -> redis::RedisResult<Connection> {
         let client = redis::Client::open(connection)?;
@@ -12,9 +12,38 @@ pub(crate) mod redislogic {
         Ok(all_keys)
     }
 
-    pub fn get_redis_value(redis: &mut redis::Connection, key: &str) -> redis::RedisResult<String> {
-        let value: String = redis.get(key)?;
-        Ok(value)
+    pub fn get_redis_value(
+        redis: &mut redis::Connection,
+        key: &str,
+    ) -> redis::RedisResult<RedisValue> {
+        let key_type: String = redis::cmd("TYPE")
+            .arg(key)
+            .query(redis)
+            .expect("failed to get key type");
+        let value: Result<RedisValue, redis::RedisError> = match key_type.as_str() {
+            "string" => {
+                let v: String = redis.get(key)?;
+                Ok(RedisValue::String(v))
+            }
+            "list" => {
+                let v: Vec<String> = redis.lrange(key, 0, -1)?;
+                Ok(RedisValue::List(v))
+            }
+            "set" => {
+                let v: Vec<String> = redis.smembers(key)?;
+                Ok(RedisValue::Set(v))
+            }
+            "zset" => {
+                let v: Vec<(String, String)> = redis.zrangebyscore(key, "-inf", "+inf")?;
+                Ok(RedisValue::ZSet(v))
+            }
+            "hash" => {
+                let v: HashMap<String, String> = redis.hgetall(key)?;
+                Ok(RedisValue::Hash(v))
+            }
+            _ => Ok(RedisValue::Null),
+        };
+        Ok(value?)
     }
 
     pub fn set_redis_value(
@@ -86,5 +115,14 @@ pub(crate) mod redislogic {
         pub name: String,
         pub sub_namespaces: HashMap<String, RedisNamespace>,
         pub keys: Vec<String>,
+    }
+
+    pub enum RedisValue {
+        String(String),
+        List(Vec<String>),
+        Set(Vec<String>),
+        ZSet(Vec<(String, String)>),
+        Hash(HashMap<String, String>),
+        Null,
     }
 }

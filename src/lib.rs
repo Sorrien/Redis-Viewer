@@ -14,7 +14,7 @@ use iced::{
 };
 use redislogic::redislogic::{
     connect_redis, convert_keys_to_namespaces, delete_redis_key, get_all_keys, set_redis_value,
-    RedisNamespace,
+    RedisNamespace, RedisValue,
 };
 
 pub struct RedisViewer {
@@ -264,11 +264,18 @@ impl Sandbox for RedisViewer {
                     .expect("failed to find current server tab in arena");
                 let value = get_redis_value(&mut current_server_tab.redis, &key)
                     .expect("failed to get value for selected redis key");
-                current_server_tab.editor_state = EditorState::Edit(ValueEditState {
-                    key: key.clone(),
-                    value,
-                    ..default()
-                });
+                match value {
+                    RedisValue::String(s) => {
+                        current_server_tab.editor_state = EditorState::Edit(ValueEditState {
+                            key: key.clone(),
+                            value: s,
+                            ..default()
+                        });
+                    }
+                    _ => {
+                        current_server_tab.editor_state = EditorState::Empty;
+                    }
+                }
             }
             Message::SelectedValueChanged(s) => {
                 let current_server_tab = self
