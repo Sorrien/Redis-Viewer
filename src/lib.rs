@@ -49,6 +49,10 @@ struct ConnectionFormState {
     conn_name_value: String,
     conn_text_input_state: text_input::State,
     conn_value: String,
+    port_text_input_state: text_input::State,
+    port_value: String,
+    db_text_input_state: text_input::State,
+    db_value: String,
     connect_button: button::State,
 }
 
@@ -60,6 +64,8 @@ pub enum Message {
     SelectedValueDeleted,
     ConnNameChanged(String),
     ConnValueChanged(String),
+    PortValueChanged(String),
+    DbValueChanged(String),
     ConnectRedis,
     RefreshKeys,
     ChangeTab(Index),
@@ -215,21 +221,17 @@ impl Sandbox for RedisViewer {
 
         let current_server_tab_index = None;
 
-        let show_connection_form = true;
-
-        let conn_name_text_input_state = text_input::State::default();
-        let conn_name_value = String::from("localhost");
-        let conn_text_input_state = text_input::State::default();
-        let conn_value = String::from("redis://127.0.0.1");
-        let connect_button = button::State::default();
-
         let conn_form_state = ConnectionFormState {
-            show_connection_form,
-            conn_name_text_input_state,
-            conn_name_value,
-            conn_text_input_state,
-            conn_value,
-            connect_button,
+            show_connection_form: true,
+            conn_name_text_input_state: text_input::State::default(),
+            conn_name_value: String::from("localhost"),
+            conn_text_input_state: text_input::State::default(),
+            conn_value: String::from("127.0.0.1"),
+            connect_button: button::State::default(),
+            port_text_input_state: text_input::State::default(),
+            port_value: String::from("6379"),
+            db_text_input_state: text_input::State::default(),
+            db_value: String::from("0"),
         };
 
         let keys_refresh_button_state = button::State::default();
@@ -340,9 +342,26 @@ impl Sandbox for RedisViewer {
             Message::ConnValueChanged(s) => {
                 self.conn_form_state.conn_value = s;
             }
+            Message::PortValueChanged(s) => {
+                self.conn_form_state.port_value = s;
+            }
+            Message::DbValueChanged(s) => {
+                self.conn_form_state.db_value = s;
+            }
             Message::ConnectRedis => {
                 let conn = self.conn_form_state.conn_value.clone();
-                let mut redis = connect_redis(&conn).expect("failed to get redis connection");
+                let port: u16 = self
+                    .conn_form_state
+                    .port_value
+                    .parse()
+                    .expect("failed to parse port");
+                let db: i64 = self
+                    .conn_form_state
+                    .db_value
+                    .parse()
+                    .expect("failed to parse db");
+                let mut redis =
+                    connect_redis(&conn, port, db).expect("failed to get redis connection");
                 let keys = get_all_keys(&mut redis).expect("failed to get keys");
                 let namespaces = convert_keys_to_namespaces(&keys);
                 let namespaces_view = create_namespace_views(&namespaces);
@@ -493,38 +512,55 @@ impl Sandbox for RedisViewer {
         let content = if self.conn_form_state.show_connection_form
             || self.current_server_tab_index == None
         {
-            let connection_form = Column::new()
-                .push(
-                    Row::new()
-                        .padding(10)
-                        .push(
-                            TextInput::new(
-                                &mut self.conn_form_state.conn_name_text_input_state,
-                                "Enter the nickname for your redis server here.",
-                                &self.conn_form_state.conn_name_value,
-                                Message::ConnNameChanged,
-                            )
-                            .padding(5),
+            let connection_form = Column::new().push(
+                Row::new()
+                    .padding(10)
+                    .push(
+                        TextInput::new(
+                            &mut self.conn_form_state.conn_name_text_input_state,
+                            "Enter the nickname for your redis server here.",
+                            &self.conn_form_state.conn_name_value,
+                            Message::ConnNameChanged,
                         )
-                        .push(
-                            TextInput::new(
-                                &mut self.conn_form_state.conn_text_input_state,
-                                "Enter the url for your redis server here.",
-                                &self.conn_form_state.conn_value,
-                                Message::ConnValueChanged,
+                        .padding(5),
+                    )
+                    .push(
+                        TextInput::new(
+                            &mut self.conn_form_state.conn_text_input_state,
+                            "Enter the url for your redis server here.",
+                            &self.conn_form_state.conn_value,
+                            Message::ConnValueChanged,
+                        )
+                        .padding(5),
+                    )
+                    .push(
+                        TextInput::new(
+                            &mut self.conn_form_state.port_text_input_state,
+                            "Enter the port for your redis server here.",
+                            &self.conn_form_state.port_value,
+                            Message::PortValueChanged,
+                        )
+                        .padding(5),
+                    )
+                    .push(
+                        TextInput::new(
+                            &mut self.conn_form_state.db_text_input_state,
+                            "Enter the db for your redis server here.",
+                            &self.conn_form_state.db_value,
+                            Message::DbValueChanged,
+                        )
+                        .padding(5),
+                    )
+                    .push(
+                        Row::new().padding(10).push(
+                            Button::new(
+                                &mut self.conn_form_state.connect_button,
+                                Text::new("Connect"),
                             )
-                            .padding(5),
+                            .on_press(Message::ConnectRedis),
                         ),
-                )
-                .push(
-                    Row::new().padding(10).push(
-                        Button::new(
-                            &mut self.conn_form_state.connect_button,
-                            Text::new("Connect"),
-                        )
-                        .on_press(Message::ConnectRedis),
                     ),
-                );
+            );
 
             content.push(connection_form)
         } else {
