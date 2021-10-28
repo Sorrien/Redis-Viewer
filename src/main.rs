@@ -1,4 +1,4 @@
-use iced::{Sandbox, Settings};
+use iced::{Application, Settings};
 use icy_redis_viewer::RedisViewer;
 
 fn main() -> iced::Result {

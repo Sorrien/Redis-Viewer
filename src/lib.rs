@@ -9,8 +9,8 @@ use std::{collections::HashMap, default::default};
 use crate::redislogic::redislogic::get_redis_value;
 use generational_arena::{Arena, Index};
 use iced::{
-    button, scrollable, text_input, Align, Button, Column, Container, Element, Length, Row,
-    Sandbox, Scrollable, Text, TextInput,
+    button, executor, scrollable, text_input, Align, Application, Button, Clipboard, Column,
+    Command, Container, Element, Length, Row, Scrollable, Text, TextInput,
 };
 use redislogic::redislogic::{
     connect_redis, convert_keys_to_namespaces, delete_redis_key, get_all_keys, set_redis_value,
@@ -213,10 +213,12 @@ fn create_namespace_rows(namespace: &mut NamespaceView, indices: Vec<usize>) -> 
     Row::new().push(column)
 }
 
-impl Sandbox for RedisViewer {
+impl Application for RedisViewer {
     type Message = Message;
+    type Executor = executor::Default;
+    type Flags = ();
 
-    fn new() -> Self {
+    fn new(_flags: ()) -> (Self, Command<Message>) {
         let server_tabs = Arena::<ServerTab>::new();
 
         let current_server_tab_index = None;
@@ -239,22 +241,25 @@ impl Sandbox for RedisViewer {
         let new_tab_button = button::State::default();
         let create_key_button = button::State::default();
 
-        RedisViewer {
-            server_tabs,
-            current_server_tab_index,
-            conn_form_state,
-            keys_refresh_button_state,
-            tab_buttons,
-            new_tab_button,
-            create_key_button,
-        }
+        (
+            Self {
+                server_tabs,
+                current_server_tab_index,
+                conn_form_state,
+                keys_refresh_button_state,
+                tab_buttons,
+                new_tab_button,
+                create_key_button,
+            },
+            Command::none(),
+        )
     }
 
     fn title(&self) -> String {
         String::from("Icy Redis Viewer")
     }
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _clipboard: &mut Clipboard) -> Command<Message> {
         match message {
             Message::KeySelected(key) => {
                 let current_server_tab = self
@@ -504,6 +509,8 @@ impl Sandbox for RedisViewer {
                 }
             }
         }
+
+        Command::none()
     }
 
     fn view(&mut self) -> Element<Message> {
